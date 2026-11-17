@@ -12,24 +12,36 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time_driver::{Driver, TICK_HZ};
 use embassy_time_queue_utils::Queue;
+#[cfg(not(all(time_driver_lptim4, any(stm32u5, stm32u3))))]
 use stm32_metapac::lptim::Lptim;
+#[cfg(all(time_driver_lptim4, any(stm32u5, stm32u3)))]
+use stm32_metapac::lptim::LptimBasic as Lptim;
+#[cfg(all(any(stm32wba, stm32u5, stm32u3), not(time_driver_lptim4)))]
+use stm32_metapac::lptim::regs::DierAdv as Dier;
+#[cfg(all(time_driver_lptim4, any(stm32u5, stm32u3)))]
+use stm32_metapac::lptim::regs::DierBasic as Dier;
 
 use super::AlarmState;
 use crate::interrupt::typelevel::Interrupt;
-use crate::lptim::{SealedInstance, vals};
+use crate::lptim::vals;
 use crate::rcc;
 use crate::rcc::SealedRccPeripheral;
 
 type T = crate::_generated::TimeDriverPeripheral;
 
+#[cfg(not(all(time_driver_lptim4, any(stm32u5, stm32u3))))]
 fn regs_lptim() -> Lptim {
-    T::regs()
+    <T as crate::lptim::SealedInstance>::regs()
+}
+
+#[cfg(all(time_driver_lptim4, any(stm32u5, stm32u3)))]
+fn regs_lptim() -> Lptim {
+    crate::pac::LPTIM4
 }
 
 // LPTIM v2a/v2b (STM32WBA, STM32U5, STM32U3, etc.) renames the interrupt
-// enable register from IER to DIER and uses IcrAdv/DierAdv register types
-// instead of Icr/Ier. The compare register also changes from a single `cmp()`
-// to an indexed `ccr(n)`.
+// enable register from IER to DIER. The compare register also changes from a
+// single `cmp()` to an indexed `ccr(n)`.
 
 /// Check if the compare-capture interrupt is enabled for channel `n`.
 fn ier_ccie(r: Lptim, n: usize) -> bool {
@@ -62,7 +74,7 @@ fn ier_set_ccie(r: Lptim, n: usize, val: bool) {
 /// set, leads to unpredictable results." A write still in flight when the chip enters Stop can
 /// also lose the compare wakeup. A write that changes nothing is skipped, so it costs no wait.
 #[cfg(any(stm32wba, stm32u5, stm32u3))]
-fn dier_modify(r: Lptim, f: impl FnOnce(&mut stm32_metapac::lptim::regs::DierAdv)) {
+fn dier_modify(r: Lptim, f: impl FnOnce(&mut Dier)) {
     let old = r.dier().read();
     let mut new = old;
     f(&mut new);
@@ -100,7 +112,7 @@ fn icr_write_raw(r: Lptim, val: u32) {
     #[cfg(not(any(stm32wba, stm32u5, stm32u3)))]
     r.icr().write_value(stm32_metapac::lptim::regs::Icr(val));
     #[cfg(any(stm32wba, stm32u5, stm32u3))]
-    r.icr().write_value(stm32_metapac::lptim::regs::IcrAdv(val));
+    r.icr().write(|w| w.0 = val);
 }
 
 /// Write the compare value and wait for the write to be acknowledged.
@@ -191,7 +203,7 @@ impl RtcDriver {
         r.arr().write(|w| w.set_arr(u16::MAX));
 
         // Enable overflow interrupts
-        ier_set_ueie(T::regs(), true);
+        ier_set_ueie(r, true);
 
         <T as crate::lptim::SealedBasicInstance>::GlobalInterrupt::unpend();
         unsafe {
@@ -255,6 +267,11 @@ impl RtcDriver {
                 {
                     crate::pac::RCC.srdamr().modify(|w| w.set_lptim3amen(true));
                     crate::pac::RCC.apb3smenr().modify(|w| w.set_lptim3smen(true));
+                }
+                #[cfg(time_driver_lptim4)]
+                {
+                    crate::pac::RCC.srdamr().modify(|w| w.set_lptim4amen(true));
+                    crate::pac::RCC.apb3smenr().modify(|w| w.set_lptim4smen(true));
                 }
             }
         }

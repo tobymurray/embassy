@@ -755,10 +755,15 @@ pub(crate) fn init_rcc(_cs: CriticalSection, config: Config) {
                     ensure_lptim_clk!(lptim2sel, Lptim2sel, Lptim2sel::Pclk1);
                 }
             }
-            #[cfg(time_driver_lptim3)]
+            #[cfg(all(time_driver_lptim3, not(any(stm32u5, stm32u3))))]
             {
                 use crate::pac::rcc::vals::Lptimsel;
                 ensure_lptim_clk!(lptim3sel, Lptimsel, Lptimsel::Pclk1);
+            }
+            #[cfg(all(any(time_driver_lptim3, time_driver_lptim4), any(stm32u5, stm32u3)))]
+            {
+                use crate::pac::rcc::vals::Lptimsel;
+                ensure_lptim_clk!(lptim34sel, Lptimsel, Lptimsel::Msik);
             }
             config
         };
